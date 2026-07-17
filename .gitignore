@@ -1,0 +1,25 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# AgentHarness local output
+/runs/
+/reports/
+*.jsonl
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
