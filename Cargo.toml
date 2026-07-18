@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "crates/agentharness-cli",
+    "crates/agentharness-policy",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://example.com/agentharness"
+homepage = "https://example.com/agentharness"
+authors = ["AgentHarness contributors"]
+
