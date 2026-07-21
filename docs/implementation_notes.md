@@ -35,11 +35,38 @@ Agentic coding tools operate directly against a developer's machine, repository,
 
 ## Next Architecture Decision
 
-Before the next substantial implementation step, decide how traces should be represented:
+Trace Layer v1 is now approved in:
 
-- event enum shape
-- JSONL file layout
-- run directory naming
-- span parent-child model
-- whether policy decisions are emitted as trace events immediately
+```text
+docs/adr-002-trace-layer-v1.md
+```
 
+Approved decisions:
+
+- flat JSONL events for v1
+- common event envelope with `type`, `run_id`, `seq`, `timestamp`, and `payload`
+- `runs/latest.txt` instead of a symlink
+- per-run `metadata.json` and `events.jsonl`
+- raw commands in traces
+- pure `agentharness-policy` crate with no trace I/O
+- no trace emission from standalone `agentharness policy check`
+- synchronous per-event JSONL writes
+
+The next implementation slice is the `agentharness-trace` crate:
+
+- trace event types
+- JSON serialization and deserialization
+- JSONL append writer
+- run directory creation
+- metadata writing
+- latest-run pointer updates
+
+Deferred trace work:
+
+- span/parent-child nesting
+- interactive confirmation prompting
+- full shell parsing
+- path canonicalization and environment expansion
+- secret exfiltration detection
+- allowed-directory policy
+- generalized compound-command classification

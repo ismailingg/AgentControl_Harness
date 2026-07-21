@@ -233,26 +233,63 @@ Captured data:
 - final answer
 - generated artifacts
 
-Initial storage format:
+Approved v1 storage format:
 
 ```text
-runs/latest/events.jsonl
+runs/latest.txt
+runs/run_20260721_120000_a1b2/events.jsonl
 ```
 
-Example event:
+Trace Layer v1 is governed by ADR 002. The v1 event protocol is flat JSONL with a common envelope:
 
 ```json
 {
-  "type": "tool_call",
-  "run_id": "run_123",
-  "span_id": "span_456",
-  "tool": "terminal",
-  "args": {
-    "command": "cargo test"
+  "type": "policy_decision",
+  "run_id": "run_20260721_120000_a1b2",
+  "seq": 2,
+  "timestamp": "2026-07-21T12:00:00Z",
+  "payload": {
+    "command": "rm -rf /",
+    "action": "block",
+    "risk": "critical",
+    "rule": "destructive-root-delete",
+    "reason": "command attempts a destructive delete against a root/system path"
   },
-  "timestamp": "2026-07-16T12:30:00Z"
 }
 ```
+
+Trace Layer v1 decisions:
+
+- Flat events only; span nesting is deferred.
+- Every event has `type`, `run_id`, `seq`, `timestamp`, and `payload`.
+- `seq` is per-run and starts at 1.
+- Commands are recorded raw, as issued by the agent.
+- `runs/latest.txt` is used instead of a symlink for Windows compatibility.
+- Each run directory contains `metadata.json` and `events.jsonl`.
+- `agentharness-policy` remains pure and does not write traces.
+- `agentharness policy check "<command>"` remains side-effect free.
+- Trace writes are synchronous per event.
+
+Trace Layer v1 event types:
+
+```text
+run_started
+policy_decision
+terminal_command
+confirmation_response
+run_finished
+error
+```
+
+Trace work explicitly deferred:
+
+- `span_id` and `parent_span_id`.
+- Interactive confirmation prompting and actual `confirmation_response` emission.
+- Full shell parsing.
+- Path canonicalization, symlink resolution, and environment variable expansion.
+- Secret exfiltration detection.
+- Allowed-directory policy.
+- Generalized compound-command classification.
 
 ### 7.2 Command Safety Firewall
 
@@ -642,25 +679,25 @@ agentharness policy check
 
 ### Phase 2: Trace Protocol
 
-Build event types:
+Build the ADR 002 trace foundation:
 
-- `run_started`
-- `model_call`
-- `tool_call`
-- `terminal_command`
-- `file_change`
-- `error`
-- `evaluation`
-- `suggestion`
-- `run_finished`
+- `agentharness-trace` crate
+- common trace event envelope
+- v1 event types: `run_started`, `policy_decision`, `terminal_command`, `confirmation_response`, `run_finished`, `error`
+- JSON serialization and deserialization
+- synchronous JSONL append writer
+- run directory creation
+- `metadata.json`
+- `latest.txt`
 
-Add:
+Defer until later trace iterations:
 
-- run IDs
-- span IDs
-- parent-child span relationships
-- timestamps
-- durations
+- span IDs and parent-child span relationships
+- model call events
+- tool call events beyond terminal commands
+- file change events
+- evaluation and suggestion events
+- duration and cost fields where needed by report/compare
 
 ### Phase 3: Command Policy Engine
 
@@ -887,4 +924,3 @@ AgentHarness should become the package developers add when they want their agent
 The guiding sentence:
 
 > AgentHarness is a Rust-based control and evaluation layer for agentic developer workflows. It traces prompts, context, tool calls, terminal commands, cost, and final outputs; blocks risky actions; detects loops and regressions; compares prompt/model/config versions; and gates agent behavior in CI.
-
