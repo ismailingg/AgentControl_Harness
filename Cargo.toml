@@ -2,6 +2,7 @@
 members = [
     "crates/agentharness-cli",
     "crates/agentharness-policy",
+    "crates/agentharness-trace",
 ]
 resolver = "2"
 
@@ -11,4 +12,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://example.com/agentharness"
 homepage = "https://example.com/agentharness"
 authors = ["AgentHarness contributors"]
+
+[workspace.dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
 

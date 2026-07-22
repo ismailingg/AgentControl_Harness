@@ -1,0 +1,19 @@
+[package]
+name = "agentharness-trace"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Trace event schema and JSONL writer for AgentHarness."
+
+[lib]
+name = "agentharness_trace"
+path = "src/lib.rs"
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
