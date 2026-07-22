@@ -39,33 +39,53 @@ impl From<serde_json::Error> for TraceError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceEvent {
-    #[serde(rename = "type")]
-    pub event_type: TraceEventType,
     pub run_id: String,
     pub seq: u64,
     pub timestamp: String,
-    pub payload: TracePayload,
+    #[serde(flatten)]
+    pub kind: TraceEventKind,
 }
 
 impl TraceEvent {
-    pub fn new(
-        event_type: TraceEventType,
-        run_id: impl Into<String>,
-        seq: u64,
-        payload: TracePayload,
-    ) -> Self {
+    pub fn new(run_id: impl Into<String>, seq: u64, kind: TraceEventKind) -> Self {
         Self {
-            event_type,
             run_id: run_id.into(),
             seq,
             timestamp: current_timestamp(),
-            payload,
+            kind,
+        }
+    }
+
+    pub fn event_type(&self) -> TraceEventType {
+        self.kind.event_type()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum TraceEventKind {
+    RunStarted(RunStartedPayload),
+    PolicyDecision(PolicyDecisionPayload),
+    TerminalCommand(TerminalCommandPayload),
+    ConfirmationResponse(ConfirmationResponsePayload),
+    RunFinished(RunFinishedPayload),
+    Error(ErrorPayload),
+}
+
+impl TraceEventKind {
+    pub fn event_type(&self) -> TraceEventType {
+        match self {
+            TraceEventKind::RunStarted(_) => TraceEventType::RunStarted,
+            TraceEventKind::PolicyDecision(_) => TraceEventType::PolicyDecision,
+            TraceEventKind::TerminalCommand(_) => TraceEventType::TerminalCommand,
+            TraceEventKind::ConfirmationResponse(_) => TraceEventType::ConfirmationResponse,
+            TraceEventKind::RunFinished(_) => TraceEventType::RunFinished,
+            TraceEventKind::Error(_) => TraceEventType::Error,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceEventType {
     RunStarted,
     PolicyDecision,
@@ -73,17 +93,6 @@ pub enum TraceEventType {
     ConfirmationResponse,
     RunFinished,
     Error,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum TracePayload {
-    RunStarted(RunStartedPayload),
-    PolicyDecision(PolicyDecisionPayload),
-    TerminalCommand(TerminalCommandPayload),
-    ConfirmationResponse(ConfirmationResponsePayload),
-    RunFinished(RunFinishedPayload),
-    Error(ErrorPayload),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,13 +193,9 @@ impl TraceWriter {
         })
     }
 
-    pub fn append(
-        &mut self,
-        event_type: TraceEventType,
-        payload: TracePayload,
-    ) -> TraceResult<u64> {
+    pub fn append(&mut self, kind: TraceEventKind) -> TraceResult<u64> {
         let seq = self.next_seq;
-        let event = TraceEvent::new(event_type, self.metadata.run_id.clone(), seq, payload);
+        let event = TraceEvent::new(self.metadata.run_id.clone(), seq, kind);
         let mut events = OpenOptions::new().append(true).open(self.events_path())?;
 
         serde_json::to_writer(&mut events, &event)?;
@@ -264,11 +269,10 @@ mod tests {
     #[test]
     fn serializes_policy_decision_with_common_envelope() {
         let event = TraceEvent {
-            event_type: TraceEventType::PolicyDecision,
             run_id: "run_20260721_120000_a1b2".to_owned(),
             seq: 2,
             timestamp: "2026-07-21T12:00:00Z".to_owned(),
-            payload: TracePayload::PolicyDecision(PolicyDecisionPayload {
+            kind: TraceEventKind::PolicyDecision(PolicyDecisionPayload {
                 command: "sudo RM -Rf /".to_owned(),
                 action: "block".to_owned(),
                 risk: "critical".to_owned(),
@@ -287,6 +291,24 @@ mod tests {
 
         let decoded: TraceEvent = serde_json::from_str(&json).expect("event should deserialize");
         assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn deserializes_confirmation_response_by_event_type_not_payload_shape() {
+        let json = r#"{"run_id":"run_20260721_120000_a1b2","seq":3,"timestamp":"2026-07-21T12:00:01Z","type":"confirmation_response","payload":{"command":"rm -rf target","approved":true,"responder":null}}"#;
+
+        let event: TraceEvent =
+            serde_json::from_str(json).expect("confirmation response should deserialize");
+
+        assert_eq!(event.event_type(), TraceEventType::ConfirmationResponse);
+        assert!(matches!(
+            event.kind,
+            TraceEventKind::ConfirmationResponse(ConfirmationResponsePayload {
+                command,
+                approved: true,
+                responder: None,
+            }) if command == "rm -rf target"
+        ));
     }
 
     #[test]
@@ -319,25 +341,19 @@ mod tests {
         let mut writer = TraceWriter::create(&runs_root, "0.1.0").expect("run should be created");
 
         let first_seq = writer
-            .append(
-                TraceEventType::RunStarted,
-                TracePayload::RunStarted(RunStartedPayload {
-                    agentharness_version: "0.1.0".to_owned(),
-                }),
-            )
+            .append(TraceEventKind::RunStarted(RunStartedPayload {
+                agentharness_version: "0.1.0".to_owned(),
+            }))
             .expect("first event should append");
         let second_seq = writer
-            .append(
-                TraceEventType::PolicyDecision,
-                TracePayload::PolicyDecision(PolicyDecisionPayload {
-                    command: "rm -rf /".to_owned(),
-                    action: "block".to_owned(),
-                    risk: "critical".to_owned(),
-                    rule: "destructive-root-delete".to_owned(),
-                    reason: "command attempts a destructive delete against a root/system path"
-                        .to_owned(),
-                }),
-            )
+            .append(TraceEventKind::PolicyDecision(PolicyDecisionPayload {
+                command: "rm -rf /".to_owned(),
+                action: "block".to_owned(),
+                risk: "critical".to_owned(),
+                rule: "destructive-root-delete".to_owned(),
+                reason: "command attempts a destructive delete against a root/system path"
+                    .to_owned(),
+            }))
             .expect("second event should append");
 
         assert_eq!(first_seq, 1);
@@ -347,7 +363,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].seq, 1);
         assert_eq!(events[1].seq, 2);
-        assert_eq!(events[1].event_type, TraceEventType::PolicyDecision);
+        assert_eq!(events[1].event_type(), TraceEventType::PolicyDecision);
 
         fs::remove_dir_all(runs_root).ok();
     }
