@@ -61,10 +61,31 @@ The next implementation slice is the `agentharness-trace` crate:
 - metadata writing
 - latest-run pointer updates
 
+## Trace Demo Slice
+
+The CLI includes a small proof-of-plumbing command:
+
+```text
+agentharness trace demo [--runs-dir <path>] [--command "<cmd>"]
+```
+
+This command creates a run directory, writes `run_started`, calls the real policy classifier, writes `policy_decision`, and finishes metadata.
+
+It intentionally does not execute commands and does not emit `terminal_command`.
+
+Temporary status mapping for this demo:
+
+- `allow` and `warn` -> `success`
+- `require_confirmation` and `block` -> `blocked`
+
+For `trace demo`, `success` means "classified as non-blocking", not "executed successfully". This must be revisited when `agentharness run` actually executes commands.
+
 Deferred trace work:
 
 - span/parent-child nesting
 - interactive confirmation prompting
+- real command execution and `terminal_command` emission from `agentharness run`
+- final run status based on actual command execution outcome
 - full shell parsing
 - path canonicalization and environment expansion
 - secret exfiltration detection

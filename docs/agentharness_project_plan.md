@@ -254,7 +254,7 @@ Trace Layer v1 is governed by ADR 002. The v1 event protocol is flat JSONL with 
     "risk": "critical",
     "rule": "destructive-root-delete",
     "reason": "command attempts a destructive delete against a root/system path"
-  },
+  }
 }
 ```
 
@@ -649,7 +649,35 @@ agentharness policy check "rm -rf /"
 
 Classifies a command without running it.
 
-### 11.5 CI
+### 11.5 Trace Demo
+
+```bash
+agentharness trace demo [--runs-dir runs] [--command "rm -rf /"]
+```
+
+Creates a demo trace without executing the command. This command is a temporary proof of wiring between `agentharness-cli`, `agentharness-policy`, and `agentharness-trace`.
+
+It writes:
+
+```text
+run_started
+policy_decision
+```
+
+It does not emit `terminal_command`, because it does not execute commands.
+
+Temporary demo-only status mapping:
+
+```text
+ALLOW -> success
+WARN -> success
+REQUIRE_CONFIRMATION -> blocked
+BLOCK -> blocked
+```
+
+For this demo, `success` means "classified as non-blocking", not "executed successfully". The real `agentharness run` command must revisit run status once commands actually execute.
+
+### 11.6 CI
 
 ```bash
 agentharness ci --config agentharness.yaml
@@ -689,6 +717,7 @@ Build the ADR 002 trace foundation:
 - run directory creation
 - `metadata.json`
 - `latest.txt`
+- CLI proof command: `agentharness trace demo [--runs-dir <path>] [--command "<cmd>"]`
 
 Defer until later trace iterations:
 
@@ -698,6 +727,8 @@ Defer until later trace iterations:
 - file change events
 - evaluation and suggestion events
 - duration and cost fields where needed by report/compare
+- real command execution and `terminal_command` emission from `agentharness run`
+- final run status based on actual execution results rather than trace-demo classification only
 
 ### Phase 3: Command Policy Engine
 
