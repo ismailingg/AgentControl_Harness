@@ -678,11 +678,17 @@ Report v1 reads `metadata.json` and `events.jsonl`, then prints:
 - failed terminal command count
 - compact policy/confirmation/terminal command details
 
+Report v1 also prints deterministic evaluations:
+
+- `no_blocked_commands`
+- `no_failed_terminal_commands`
+- `run_status_success`
+
 Temporary v1 constraints:
 
 - terminal text output only
 - no JSON report output yet
-- no scoring
+- no numeric scoring
 - no comparison
 - no CI gate behavior
 - no aggregation across multiple runs

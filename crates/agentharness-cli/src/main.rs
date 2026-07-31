@@ -202,6 +202,14 @@ struct RunReport {
     policy_decisions: Vec<PolicyDecisionPayload>,
     terminal_commands: Vec<TerminalCommandPayload>,
     confirmation_responses: Vec<ConfirmationResponsePayload>,
+    evaluations: Vec<ReportEvaluation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReportEvaluation {
+    name: &'static str,
+    passed: bool,
+    detail: String,
 }
 
 fn parse_run_options(parts: &[String]) -> Result<RunOptions, String> {
@@ -316,6 +324,12 @@ fn build_report(options: &ReportOptions) -> Result<RunReport, Box<dyn std::error
         .filter(|command| command.exit_code != Some(0))
         .count();
 
+    let evaluations = report_evaluations(
+        metadata.status,
+        blocked_command_count,
+        failed_terminal_command_count,
+    );
+
     Ok(RunReport {
         run_dir,
         metadata,
@@ -329,6 +343,7 @@ fn build_report(options: &ReportOptions) -> Result<RunReport, Box<dyn std::error
         policy_decisions,
         terminal_commands,
         confirmation_responses,
+        evaluations,
     })
 }
 
@@ -373,6 +388,17 @@ fn print_report(report: &RunReport) {
         report.failed_terminal_command_count
     );
 
+    println!();
+    println!("Evaluations:");
+    for evaluation in &report.evaluations {
+        println!(
+            "{} {} - {}",
+            evaluation_status_label(evaluation.passed),
+            evaluation.name,
+            evaluation.detail
+        );
+    }
+
     if !report.policy_decisions.is_empty() {
         println!();
         println!("Policy decisions:");
@@ -401,6 +427,38 @@ fn print_report(report: &RunReport) {
                 command.command, command.exit_code, command.duration_ms
             );
         }
+    }
+}
+
+fn report_evaluations(
+    status: RunStatus,
+    blocked_command_count: usize,
+    failed_terminal_command_count: usize,
+) -> Vec<ReportEvaluation> {
+    vec![
+        ReportEvaluation {
+            name: "no_blocked_commands",
+            passed: blocked_command_count == 0,
+            detail: format!("blocked_commands={blocked_command_count}"),
+        },
+        ReportEvaluation {
+            name: "no_failed_terminal_commands",
+            passed: failed_terminal_command_count == 0,
+            detail: format!("failed_terminal_commands={failed_terminal_command_count}"),
+        },
+        ReportEvaluation {
+            name: "run_status_success",
+            passed: status == RunStatus::Success,
+            detail: format!("status={}", run_status_label(status)),
+        },
+    ]
+}
+
+fn evaluation_status_label(passed: bool) -> &'static str {
+    if passed {
+        "PASS"
+    } else {
+        "FAIL"
     }
 }
 
@@ -636,6 +694,49 @@ mod tests {
     #[test]
     fn rejects_report_options_with_extra_arguments() {
         assert!(parse_report_options(&["runs".to_owned(), "extra".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn report_evaluations_pass_for_successful_clean_run() {
+        let evaluations = report_evaluations(RunStatus::Success, 0, 0);
+
+        assert_eq!(
+            evaluations,
+            vec![
+                ReportEvaluation {
+                    name: "no_blocked_commands",
+                    passed: true,
+                    detail: "blocked_commands=0".to_owned(),
+                },
+                ReportEvaluation {
+                    name: "no_failed_terminal_commands",
+                    passed: true,
+                    detail: "failed_terminal_commands=0".to_owned(),
+                },
+                ReportEvaluation {
+                    name: "run_status_success",
+                    passed: true,
+                    detail: "status=success".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn report_evaluations_fail_for_blocked_or_failed_run() {
+        let evaluations = report_evaluations(RunStatus::Blocked, 1, 0);
+
+        assert_eq!(evaluations[0].name, "no_blocked_commands");
+        assert!(!evaluations[0].passed);
+        assert_eq!(evaluations[1].name, "no_failed_terminal_commands");
+        assert!(evaluations[1].passed);
+        assert_eq!(evaluations[2].name, "run_status_success");
+        assert!(!evaluations[2].passed);
+
+        let evaluations = report_evaluations(RunStatus::Failed, 0, 1);
+        assert!(evaluations[0].passed);
+        assert!(!evaluations[1].passed);
+        assert!(!evaluations[2].passed);
     }
 
     #[test]
