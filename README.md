@@ -41,6 +41,18 @@ For safe manual testing:
 cargo run -p agentharness-cli -- run examples/allow-command.yaml
 ```
 
+To summarize the latest run in a runs directory:
+
+```bash
+cargo run -p agentharness-cli -- report runs
+```
+
+You can also report a specific run directory:
+
+```bash
+cargo run -p agentharness-cli -- report runs/run_...
+```
+
 Run v1 supports one configured command:
 
 ```yaml

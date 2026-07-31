@@ -9,6 +9,7 @@ dependencies = [
  "agentharness-policy",
  "agentharness-trace",
  "serde",
+ "serde_json",
  "serde_yaml",
 ]
 

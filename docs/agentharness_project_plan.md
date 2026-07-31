@@ -659,10 +659,33 @@ Temporary v1 constraints:
 ### 11.2 Report
 
 ```bash
-agentharness report runs/latest
+agentharness report <runs-dir-or-run-dir>
 ```
 
 Shows run score, failures, warnings, costs, and suggestions.
+
+Report v1 is the first trace reader. If the path contains `latest.txt`, it resolves that file to the latest run directory. Otherwise, it treats the path as a direct run directory.
+
+Report v1 reads `metadata.json` and `events.jsonl`, then prints:
+
+- run ID, path, status, start/end timestamps
+- event count
+- policy decision count
+- terminal command count
+- confirmation response count
+- blocked command count
+- warning count
+- failed terminal command count
+- compact policy/confirmation/terminal command details
+
+Temporary v1 constraints:
+
+- terminal text output only
+- no JSON report output yet
+- no scoring
+- no comparison
+- no CI gate behavior
+- no aggregation across multiple runs
 
 ### 11.3 Compare
 
@@ -750,6 +773,7 @@ Build the ADR 002 trace foundation:
 - `latest.txt`
 - CLI proof command: `agentharness trace demo [--runs-dir <path>] [--command "<cmd>"]`
 - first real capture command: `agentharness run <config-file> [--runs-dir <path>] [--yes]`
+- first trace reader command: `agentharness report <runs-dir-or-run-dir>`
 
 Defer until later trace iterations:
 
@@ -762,6 +786,9 @@ Defer until later trace iterations:
 - multi-command workflows
 - interactive confirmation prompting
 - working-directory config
+- JSON report output
+- scoring and CI gate behavior
+- report aggregation across multiple runs
 
 ### Phase 3: Command Policy Engine
 

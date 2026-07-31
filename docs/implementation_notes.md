@@ -130,3 +130,39 @@ Temporary v1 constraints:
 - no interactive prompt yet; `--yes` is the temporary approval mechanism
 - no model/tool/file/evaluation/suggestion events yet
 - no working-directory config yet
+
+## Report v1 Slice
+
+The first trace reader command is:
+
+```text
+agentharness report <runs-dir-or-run-dir>
+```
+
+If the path contains `latest.txt`, report v1 resolves it to the latest run directory. Otherwise, it treats the path as a direct run directory.
+
+Report v1 reads:
+
+- `metadata.json`
+- `events.jsonl`
+
+It prints:
+
+- run ID, path, status, start/end timestamps
+- event count
+- policy decision count
+- terminal command count
+- confirmation response count
+- blocked command count
+- warning count
+- failed terminal command count
+- compact policy/confirmation/terminal command details
+
+Temporary v1 constraints:
+
+- terminal text output only
+- no JSON report output yet
+- no scoring
+- no comparison
+- no CI gate behavior
+- no aggregation across multiple runs

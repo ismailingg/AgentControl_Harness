@@ -1,7 +1,8 @@
 use agentharness_policy::{classify_command, PolicyAction, PolicyDecision};
 use agentharness_trace::{
-    ConfirmationResponsePayload, ErrorPayload, PolicyDecisionPayload, RunFinishedPayload,
-    RunStartedPayload, RunStatus, TerminalCommandPayload, TraceEventKind, TraceWriter,
+    read_events, ConfirmationResponsePayload, ErrorPayload, PolicyDecisionPayload,
+    RunFinishedPayload, RunMetadata, RunStartedPayload, RunStatus, TerminalCommandPayload,
+    TraceEventKind, TraceWriter,
 };
 use serde::Deserialize;
 use std::env;
@@ -30,6 +31,7 @@ fn main() -> ExitCode {
             trace_demo(rest)
         }
         [command, rest @ ..] if command == "run" => run_workflow(rest),
+        [command, rest @ ..] if command == "report" => report_run(rest),
         _ => {
             eprintln!("Unknown command.");
             print_help();
@@ -49,6 +51,11 @@ struct RunOptions {
     config_path: PathBuf,
     runs_dir: PathBuf,
     yes: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReportOptions {
+    path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,6 +124,28 @@ fn run_workflow(parts: &[String]) -> ExitCode {
     }
 }
 
+fn report_run(parts: &[String]) -> ExitCode {
+    let options = match parse_report_options(parts) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            eprintln!("Usage: agentharness report <runs-dir-or-run-dir>");
+            return ExitCode::from(64);
+        }
+    };
+
+    match build_report(&options) {
+        Ok(report) => {
+            print_report(&report);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("Failed to read report: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn trace_demo(parts: &[String]) -> ExitCode {
     let options = match parse_trace_demo_options(parts) {
         Ok(options) => options,
@@ -159,6 +188,22 @@ struct RunSummary {
     decision: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunReport {
+    run_dir: PathBuf,
+    metadata: RunMetadata,
+    event_count: usize,
+    policy_decision_count: usize,
+    terminal_command_count: usize,
+    confirmation_response_count: usize,
+    blocked_command_count: usize,
+    warning_count: usize,
+    failed_terminal_command_count: usize,
+    policy_decisions: Vec<PolicyDecisionPayload>,
+    terminal_commands: Vec<TerminalCommandPayload>,
+    confirmation_responses: Vec<ConfirmationResponsePayload>,
+}
+
 fn parse_run_options(parts: &[String]) -> Result<RunOptions, String> {
     let Some(config_path) = parts.first() else {
         return Err("Missing config file.".to_owned());
@@ -195,6 +240,20 @@ fn parse_run_options(parts: &[String]) -> Result<RunOptions, String> {
     })
 }
 
+fn parse_report_options(parts: &[String]) -> Result<ReportOptions, String> {
+    let Some(path) = parts.first() else {
+        return Err("Missing report path.".to_owned());
+    };
+
+    if parts.len() > 1 {
+        return Err("Too many arguments for report.".to_owned());
+    }
+
+    Ok(ReportOptions {
+        path: PathBuf::from(path),
+    })
+}
+
 fn parse_trace_demo_options(parts: &[String]) -> Result<TraceDemoOptions, String> {
     let mut runs_dir = PathBuf::from(DEFAULT_RUNS_DIR);
     let mut command = DEFAULT_TRACE_DEMO_COMMAND.to_owned();
@@ -223,6 +282,126 @@ fn parse_trace_demo_options(parts: &[String]) -> Result<TraceDemoOptions, String
     }
 
     Ok(TraceDemoOptions { runs_dir, command })
+}
+
+fn build_report(options: &ReportOptions) -> Result<RunReport, Box<dyn std::error::Error>> {
+    let run_dir = resolve_report_run_dir(&options.path)?;
+    let metadata = read_run_metadata(&run_dir)?;
+    let events = read_events(run_dir.join("events.jsonl"))?;
+    let mut policy_decisions = Vec::new();
+    let mut terminal_commands = Vec::new();
+    let mut confirmation_responses = Vec::new();
+
+    for event in &events {
+        match &event.kind {
+            TraceEventKind::PolicyDecision(payload) => policy_decisions.push(payload.clone()),
+            TraceEventKind::TerminalCommand(payload) => terminal_commands.push(payload.clone()),
+            TraceEventKind::ConfirmationResponse(payload) => {
+                confirmation_responses.push(payload.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let blocked_command_count = policy_decisions
+        .iter()
+        .filter(|decision| decision.action == "block")
+        .count();
+    let warning_count = policy_decisions
+        .iter()
+        .filter(|decision| decision.action == "warn")
+        .count();
+    let failed_terminal_command_count = terminal_commands
+        .iter()
+        .filter(|command| command.exit_code != Some(0))
+        .count();
+
+    Ok(RunReport {
+        run_dir,
+        metadata,
+        event_count: events.len(),
+        policy_decision_count: policy_decisions.len(),
+        terminal_command_count: terminal_commands.len(),
+        confirmation_response_count: confirmation_responses.len(),
+        blocked_command_count,
+        warning_count,
+        failed_terminal_command_count,
+        policy_decisions,
+        terminal_commands,
+        confirmation_responses,
+    })
+}
+
+fn resolve_report_run_dir(path: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let latest_path = path.join("latest.txt");
+
+    if latest_path.exists() {
+        let latest_run = fs::read_to_string(latest_path)?;
+        Ok(path.join(latest_run.trim()))
+    } else {
+        Ok(path.clone())
+    }
+}
+
+fn read_run_metadata(run_dir: &PathBuf) -> Result<RunMetadata, Box<dyn std::error::Error>> {
+    let contents = fs::read_to_string(run_dir.join("metadata.json"))?;
+    Ok(serde_json::from_str(&contents)?)
+}
+
+fn print_report(report: &RunReport) {
+    println!("Run: {}", report.metadata.run_id);
+    println!("Path: {}", report.run_dir.display());
+    println!("Status: {}", run_status_label(report.metadata.status));
+    println!("Started: {}", report.metadata.started_at);
+
+    if let Some(finished_at) = &report.metadata.finished_at {
+        println!("Finished: {finished_at}");
+    }
+
+    println!();
+    println!("Events: {}", report.event_count);
+    println!("Policy decisions: {}", report.policy_decision_count);
+    println!("Terminal commands: {}", report.terminal_command_count);
+    println!(
+        "Confirmation responses: {}",
+        report.confirmation_response_count
+    );
+    println!("Blocked commands: {}", report.blocked_command_count);
+    println!("Warnings: {}", report.warning_count);
+    println!(
+        "Failed terminal commands: {}",
+        report.failed_terminal_command_count
+    );
+
+    if !report.policy_decisions.is_empty() {
+        println!();
+        println!("Policy decisions:");
+        for decision in &report.policy_decisions {
+            println!(
+                "- {} -> {} ({}, rule: {})",
+                decision.command, decision.action, decision.risk, decision.rule
+            );
+        }
+    }
+
+    if !report.confirmation_responses.is_empty() {
+        println!();
+        println!("Confirmation responses:");
+        for response in &report.confirmation_responses {
+            println!("- {} -> approved={}", response.command, response.approved);
+        }
+    }
+
+    if !report.terminal_commands.is_empty() {
+        println!();
+        println!("Terminal commands:");
+        for command in &report.terminal_commands {
+            println!(
+                "- {} -> exit_code={:?}, duration_ms={:?}",
+                command.command, command.exit_code, command.duration_ms
+            );
+        }
+    }
 }
 
 fn execute_run(options: &RunOptions) -> Result<RunSummary, Box<dyn std::error::Error>> {
@@ -403,11 +582,13 @@ fn print_help() {
     println!();
     println!("Usage:");
     println!("  agentharness run <config-file> [--runs-dir <path>] [--yes]");
+    println!("  agentharness report <runs-dir-or-run-dir>");
     println!("  agentharness policy check \"<command>\"");
     println!("  agentharness trace demo [--runs-dir <path>] [--command \"<cmd>\"]");
     println!();
     println!("Examples:");
     println!("  agentharness run examples/risky-command.yaml");
+    println!("  agentharness report runs");
     println!("  agentharness policy check \"cargo test\"");
     println!("  agentharness policy check \"rm -rf /\"");
     println!("  agentharness trace demo");
@@ -443,6 +624,18 @@ mod tests {
 
         assert_eq!(options.runs_dir, PathBuf::from("tmp-runs"));
         assert!(options.yes);
+    }
+
+    #[test]
+    fn parses_report_options() {
+        let options = parse_report_options(&["runs".to_owned()]).expect("report parses");
+
+        assert_eq!(options.path, PathBuf::from("runs"));
+    }
+
+    #[test]
+    fn rejects_report_options_with_extra_arguments() {
+        assert!(parse_report_options(&["runs".to_owned(), "extra".to_owned()]).is_err());
     }
 
     #[test]
