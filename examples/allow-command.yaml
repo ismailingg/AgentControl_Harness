@@ -1,0 +1,4 @@
+id: allow_command_demo
+
+workflow:
+  command: "echo agentharness-run-ok"

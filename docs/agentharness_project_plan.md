@@ -620,10 +620,41 @@ success_criteria:
 ### 11.1 Run
 
 ```bash
-agentharness run examples/codegen.yaml
+agentharness run <config-file> [--runs-dir runs] [--yes]
 ```
 
 Runs the configured workflow and records traces.
+
+Run v1 uses the minimal config shape:
+
+```yaml
+id: risky_command_demo
+
+workflow:
+  command: "cargo test"
+```
+
+Run v1 behavior:
+
+- creates a trace run
+- writes `run_started`
+- classifies `workflow.command`
+- writes `policy_decision`
+- blocks `BLOCK` decisions without execution
+- blocks `REQUIRE_CONFIRMATION` decisions unless `--yes` is passed
+- writes `confirmation_response` for `REQUIRE_CONFIRMATION`
+- executes `ALLOW`, `WARN`, and `REQUIRE_CONFIRMATION --yes` commands
+- writes `terminal_command` with exit code, duration, and stdout/stderr excerpts
+- writes `run_finished`
+- updates `metadata.json`
+
+Temporary v1 constraints:
+
+- one command per config
+- command strings execute through the platform shell (`cmd /C` on Windows, `sh -c` elsewhere)
+- no interactive prompt yet; `--yes` is the temporary approval mechanism
+- no model/tool/file/evaluation/suggestion events yet
+- no working-directory config yet
 
 ### 11.2 Report
 
@@ -718,6 +749,7 @@ Build the ADR 002 trace foundation:
 - `metadata.json`
 - `latest.txt`
 - CLI proof command: `agentharness trace demo [--runs-dir <path>] [--command "<cmd>"]`
+- first real capture command: `agentharness run <config-file> [--runs-dir <path>] [--yes]`
 
 Defer until later trace iterations:
 
@@ -727,8 +759,9 @@ Defer until later trace iterations:
 - file change events
 - evaluation and suggestion events
 - duration and cost fields where needed by report/compare
-- real command execution and `terminal_command` emission from `agentharness run`
-- final run status based on actual execution results rather than trace-demo classification only
+- multi-command workflows
+- interactive confirmation prompting
+- working-directory config
 
 ### Phase 3: Command Policy Engine
 

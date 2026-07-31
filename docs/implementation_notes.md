@@ -91,3 +91,42 @@ Deferred trace work:
 - secret exfiltration detection
 - allowed-directory policy
 - generalized compound-command classification
+
+## Run v1 Slice
+
+The first real run command is:
+
+```text
+agentharness run <config-file> [--runs-dir <path>] [--yes]
+```
+
+The v1 config shape is intentionally minimal:
+
+```yaml
+id: risky_command_demo
+
+workflow:
+  command: "cargo test"
+```
+
+Run v1 behavior:
+
+- creates a trace run
+- writes `run_started`
+- classifies `workflow.command`
+- writes `policy_decision`
+- blocks `block` decisions without execution
+- blocks `require_confirmation` decisions unless `--yes` is passed
+- writes `confirmation_response` for `require_confirmation`
+- executes `allow`, `warn`, and `require_confirmation --yes` commands
+- writes `terminal_command` with exit code, duration, and stdout/stderr excerpts
+- writes `run_finished`
+- updates `metadata.json`
+
+Temporary v1 constraints:
+
+- only one command per config
+- command strings execute through the platform shell (`cmd /C` on Windows, `sh -c` elsewhere)
+- no interactive prompt yet; `--yes` is the temporary approval mechanism
+- no model/tool/file/evaluation/suggestion events yet
+- no working-directory config yet

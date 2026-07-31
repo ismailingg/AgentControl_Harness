@@ -15,4 +15,6 @@ path = "src/main.rs"
 [dependencies]
 agentharness-policy = { path = "../agentharness-policy" }
 agentharness-trace = { path = "../agentharness-trace" }
+serde.workspace = true
+serde_yaml.workspace = true
 
