@@ -641,9 +641,9 @@ Run v1 behavior:
 - classifies `workflow.command`
 - writes `policy_decision`
 - blocks `BLOCK` decisions without execution
-- blocks `REQUIRE_CONFIRMATION` decisions unless `--yes` is passed
-- writes `confirmation_response` for `REQUIRE_CONFIRMATION`
-- executes `ALLOW`, `WARN`, and `REQUIRE_CONFIRMATION --yes` commands
+- for `REQUIRE_CONFIRMATION` decisions, prompts interactively on stdin unless `--yes` is passed (which auto-approves)
+- writes `confirmation_response` with the real approve/decline outcome
+- executes `ALLOW`, `WARN`, and approved `REQUIRE_CONFIRMATION` commands
 - writes `terminal_command` with exit code, duration, and stdout/stderr excerpts
 - writes `run_finished`
 - updates `metadata.json`
@@ -652,7 +652,8 @@ Temporary v1 constraints:
 
 - one command per config
 - command strings execute through the platform shell (`cmd /C` on Windows, `sh -c` elsewhere)
-- no interactive prompt yet; `--yes` is the temporary approval mechanism
+- `--yes` bypasses the prompt entirely; no way yet to force the prompt even with `--yes` set
+- no responder metadata captured for confirmation answers
 - no model/tool/file/evaluation/suggestion events yet
 - no working-directory config yet
 
@@ -690,8 +691,9 @@ Temporary v1 constraints:
 - no JSON report output yet
 - no numeric scoring
 - no comparison
-- no CI gate behavior
 - no aggregation across multiple runs
+
+CI gate behavior now exists as a separate command; see §11.6.
 
 ### 11.3 Compare
 
@@ -743,7 +745,15 @@ For this demo, `success` means "classified as non-blocking", not "executed succe
 agentharness ci --config agentharness.yaml
 ```
 
-Runs configured checks and exits non-zero on failure.
+Runs configured checks and exits non-zero on failure. This is the long-term vision: a config-driven gate with the fail-if thresholds described in §7.11 (success rate drop, cost increase, loop failure rate, etc.).
+
+CI v1 (shipped) is a smaller, deterministic-only slice of this:
+
+```bash
+agentharness ci <runs-dir-or-run-dir>
+```
+
+It takes the same path argument as `report`, reuses `report`'s evaluation logic (`no_blocked_commands`, `no_failed_terminal_commands`, `run_status_success`) with no config file and no configurable thresholds, and exits `0` if all evaluations pass or `1` otherwise. The richer config-driven version above remains future work.
 
 ## 12. Implementation Roadmap
 
@@ -788,13 +798,14 @@ Defer until later trace iterations:
 - tool call events beyond terminal commands
 - file change events
 - evaluation and suggestion events
-- duration and cost fields where needed by report/compare
+- cost fields where needed by report/compare (duration is already captured for terminal commands)
 - multi-command workflows
-- interactive confirmation prompting
 - working-directory config
 - JSON report output
-- scoring and CI gate behavior
+- numeric scoring
 - report aggregation across multiple runs
+
+Shipped since this phase was first scoped: real command execution and `terminal_command` emission, `agentharness report` v1, deterministic evaluations in `report`, `agentharness ci` v1 (deterministic-only gate, exit-code based), interactive confirmation prompting.
 
 ### Phase 3: Command Policy Engine
 

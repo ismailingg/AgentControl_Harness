@@ -80,17 +80,19 @@ Temporary status mapping for this demo:
 
 For `trace demo`, `success` means "classified as non-blocking", not "executed successfully". This must be revisited when `agentharness run` actually executes commands.
 
-Deferred trace work:
+Deferred trace work (status as of the `agentharness ci` v1 and interactive confirmation prompting slices):
 
 - span/parent-child nesting
-- interactive confirmation prompting
-- real command execution and `terminal_command` emission from `agentharness run`
-- final run status based on actual command execution outcome
+- new event types: `model_call`, `tool_call` (non-terminal tools), file read/write/diff events, `evaluation` events, `suggestion` events
+- token usage and cost fields on any payload
+- richer `confirmation_response.responder` metadata
 - full shell parsing
 - path canonicalization and environment expansion
 - secret exfiltration detection
 - allowed-directory policy
 - generalized compound-command classification
+
+Resolved since this section was first written: real command execution and `terminal_command` emission from `agentharness run`, final run status from actual execution outcome, and interactive confirmation prompting are all implemented.
 
 ## Run v1 Slice
 
@@ -116,9 +118,9 @@ Run v1 behavior:
 - classifies `workflow.command`
 - writes `policy_decision`
 - blocks `block` decisions without execution
-- blocks `require_confirmation` decisions unless `--yes` is passed
-- writes `confirmation_response` for `require_confirmation`
-- executes `allow`, `warn`, and `require_confirmation --yes` commands
+- for `require_confirmation` decisions, prompts interactively on stdin (`Proceed? [y/N]`) unless `--yes` is passed, in which case it auto-approves
+- writes `confirmation_response` with the real approve/decline outcome
+- executes `allow`, `warn`, and approved `require_confirmation` commands
 - writes `terminal_command` with exit code, duration, and stdout/stderr excerpts
 - writes `run_finished`
 - updates `metadata.json`
@@ -127,7 +129,8 @@ Temporary v1 constraints:
 
 - only one command per config
 - command strings execute through the platform shell (`cmd /C` on Windows, `sh -c` elsewhere)
-- no interactive prompt yet; `--yes` is the temporary approval mechanism
+- `--yes` bypasses the prompt entirely; there is no way yet to require the prompt even when `--yes` is set (e.g. for a hardened CI mode)
+- `confirmation_response.responder` is always `null`; no richer responder metadata (username, source) yet
 - no model/tool/file/evaluation/suggestion events yet
 - no working-directory config yet
 
@@ -170,5 +173,48 @@ Temporary v1 constraints:
 - no JSON report output yet
 - no numeric scoring
 - no comparison
-- no CI gate behavior
 - no aggregation across multiple runs
+
+## CI v1 Slice
+
+The first CI gate command is:
+
+```text
+agentharness ci <runs-dir-or-run-dir>
+```
+
+It takes the same argument shape as `report` (a `runs/` dir with `latest.txt`, or a direct run dir) and reuses the exact same report-building and evaluation logic. It does not add any new evaluations or trace data — it is purely a pass/fail gate on top of the three deterministic evaluations `report` already computes (`no_blocked_commands`, `no_failed_terminal_commands`, `run_status_success`).
+
+Output is condensed compared to `report`: run ID, status, and the PASS/FAIL evaluation lines only (no policy/terminal-command/confirmation detail dump).
+
+Exit codes:
+
+- `0` - every evaluation passed
+- `1` - an evaluation failed, or the run/report could not be read at all (missing directory, corrupt JSON, etc.)
+- `64` - usage error (missing argument)
+
+Temporary v1 constraints:
+
+- no configurable fail-if thresholds (see project plan §7.11 `CI Gates` for the eventual richer design); v1 only gates on the fixed set of deterministic evaluations `report` already produces
+- no JSON output
+
+## Interactive Confirmation Prompting Slice
+
+`agentharness run` now prompts on stdin for `require_confirmation` decisions instead of always auto-declining:
+
+```text
+This command requires confirmation:
+  Command: git clean -fd
+  Risk: HIGH
+  Reason: git clean can remove untracked files permanently
+Proceed? [y/N]:
+```
+
+`--yes` still bypasses the prompt entirely and auto-approves, for scripted/non-interactive use. The `confirmation_response` event already existed in the schema (ADR 002) and is unchanged in shape - this slice only changes how the `approved` field gets decided.
+
+If stdin can't be read (EOF, closed pipe), the command is treated as declined rather than erroring.
+
+Temporary constraints:
+
+- `confirmation_response.responder` is still always `null`; the prompt does not capture who answered
+- no way to force the prompt even when `--yes` is passed (e.g. a stricter CI mode that always wants an explicit answer)

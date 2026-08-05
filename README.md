@@ -53,6 +53,12 @@ You can also report a specific run directory:
 cargo run -p agentharness-cli -- report runs/run_...
 ```
 
+To gate on the same evaluations `report` prints (useful for CI), exits non-zero on failure:
+
+```bash
+cargo run -p agentharness-cli -- ci runs
+```
+
 Run v1 supports one configured command:
 
 ```yaml
@@ -60,7 +66,7 @@ workflow:
   command: "cargo test"
 ```
 
-`REQUIRE_CONFIRMATION` commands do not execute unless `--yes` is passed.
+`REQUIRE_CONFIRMATION` commands prompt for a y/n answer on stdin. Pass `--yes` to auto-approve without prompting (for scripted/non-interactive use).
 
 ## Workspace
 
@@ -84,6 +90,8 @@ docs/
 - CLI-first interface
 - deterministic command safety classifier
 - local JSONL trace writer
-- single-command `agentharness run` v1
-- examples for risky and allowed commands
-- unit tests for policy classification
+- single-command `agentharness run` v1, with interactive confirmation prompting
+- `agentharness report` with deterministic evaluations
+- `agentharness ci` v1 (exit-code gate on those same evaluations)
+- examples for risky, allowed, and confirmation-required commands
+- unit tests for policy classification, trace writing, and CLI behavior

@@ -7,6 +7,7 @@ use agentharness_trace::{
 use serde::Deserialize;
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use std::time::Instant;
@@ -32,6 +33,7 @@ fn main() -> ExitCode {
         }
         [command, rest @ ..] if command == "run" => run_workflow(rest),
         [command, rest @ ..] if command == "report" => report_run(rest),
+        [command, rest @ ..] if command == "ci" => ci_run(rest),
         _ => {
             eprintln!("Unknown command.");
             print_help();
@@ -138,6 +140,33 @@ fn report_run(parts: &[String]) -> ExitCode {
         Ok(report) => {
             print_report(&report);
             ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("Failed to read report: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn ci_run(parts: &[String]) -> ExitCode {
+    let options = match parse_report_options(parts) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            eprintln!("Usage: agentharness ci <runs-dir-or-run-dir>");
+            return ExitCode::from(64);
+        }
+    };
+
+    match build_report(&options) {
+        Ok(report) => {
+            print_ci_report(&report);
+
+            if evaluations_passed(&report.evaluations) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
         }
         Err(error) => {
             eprintln!("Failed to read report: {error}");
@@ -430,6 +459,26 @@ fn print_report(report: &RunReport) {
     }
 }
 
+fn print_ci_report(report: &RunReport) {
+    println!("Run: {}", report.metadata.run_id);
+    println!("Status: {}", run_status_label(report.metadata.status));
+    println!();
+    println!("Evaluations:");
+
+    for evaluation in &report.evaluations {
+        println!(
+            "{} {} - {}",
+            evaluation_status_label(evaluation.passed),
+            evaluation.name,
+            evaluation.detail
+        );
+    }
+}
+
+fn evaluations_passed(evaluations: &[ReportEvaluation]) -> bool {
+    evaluations.iter().all(|evaluation| evaluation.passed)
+}
+
 fn report_evaluations(
     status: RunStatus,
     blocked_command_count: usize,
@@ -478,25 +527,22 @@ fn execute_run(options: &RunOptions) -> Result<RunSummary, Box<dyn std::error::E
 
     let status = match decision.action {
         PolicyAction::Block => RunStatus::Blocked,
-        PolicyAction::RequireConfirmation if !options.yes => {
-            writer.append(TraceEventKind::ConfirmationResponse(
-                ConfirmationResponsePayload {
-                    command: command.clone(),
-                    approved: false,
-                    responder: None,
-                },
-            ))?;
-            RunStatus::Blocked
-        }
         PolicyAction::RequireConfirmation => {
+            let approved = options.yes || prompt_for_confirmation(&command, &decision);
+
             writer.append(TraceEventKind::ConfirmationResponse(
                 ConfirmationResponsePayload {
                     command: command.clone(),
-                    approved: true,
+                    approved,
                     responder: None,
                 },
             ))?;
-            execute_and_trace_command(&mut writer, &command)?
+
+            if approved {
+                execute_and_trace_command(&mut writer, &command)?
+            } else {
+                RunStatus::Blocked
+            }
         }
         PolicyAction::Allow | PolicyAction::Warn => {
             execute_and_trace_command(&mut writer, &command)?
@@ -517,6 +563,28 @@ fn execute_run(options: &RunOptions) -> Result<RunSummary, Box<dyn std::error::E
 fn read_run_config(path: &PathBuf) -> Result<RunConfig, Box<dyn std::error::Error>> {
     let contents = fs::read_to_string(path)?;
     Ok(serde_yaml::from_str(&contents)?)
+}
+
+fn prompt_for_confirmation(command: &str, decision: &PolicyDecision) -> bool {
+    println!();
+    println!("This command requires confirmation:");
+    println!("  Command: {command}");
+    println!("  Risk: {}", decision.risk);
+    println!("  Reason: {}", decision.reason);
+    print!("Proceed? [y/N]: ");
+    let _ = io::stdout().flush();
+
+    let mut input = String::new();
+
+    if io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+
+    parse_confirmation_response(&input)
+}
+
+fn parse_confirmation_response(input: &str) -> bool {
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
 fn execute_and_trace_command(
@@ -641,12 +709,14 @@ fn print_help() {
     println!("Usage:");
     println!("  agentharness run <config-file> [--runs-dir <path>] [--yes]");
     println!("  agentharness report <runs-dir-or-run-dir>");
+    println!("  agentharness ci <runs-dir-or-run-dir>");
     println!("  agentharness policy check \"<command>\"");
     println!("  agentharness trace demo [--runs-dir <path>] [--command \"<cmd>\"]");
     println!();
     println!("Examples:");
     println!("  agentharness run examples/risky-command.yaml");
     println!("  agentharness report runs");
+    println!("  agentharness ci runs");
     println!("  agentharness policy check \"cargo test\"");
     println!("  agentharness policy check \"rm -rf /\"");
     println!("  agentharness trace demo");
@@ -737,6 +807,37 @@ mod tests {
         assert!(evaluations[0].passed);
         assert!(!evaluations[1].passed);
         assert!(!evaluations[2].passed);
+    }
+
+    #[test]
+    fn parse_confirmation_response_accepts_y_variants() {
+        assert!(parse_confirmation_response("y"));
+        assert!(parse_confirmation_response("Y\n"));
+        assert!(parse_confirmation_response("yes"));
+        assert!(parse_confirmation_response("  YES  "));
+    }
+
+    #[test]
+    fn parse_confirmation_response_rejects_everything_else() {
+        assert!(!parse_confirmation_response("n"));
+        assert!(!parse_confirmation_response("no"));
+        assert!(!parse_confirmation_response(""));
+        assert!(!parse_confirmation_response("\n"));
+        assert!(!parse_confirmation_response("sure"));
+    }
+
+    #[test]
+    fn evaluations_passed_is_true_when_all_pass() {
+        let evaluations = report_evaluations(RunStatus::Success, 0, 0);
+
+        assert!(evaluations_passed(&evaluations));
+    }
+
+    #[test]
+    fn evaluations_passed_is_false_when_any_fail() {
+        let evaluations = report_evaluations(RunStatus::Blocked, 1, 0);
+
+        assert!(!evaluations_passed(&evaluations));
     }
 
     #[test]
