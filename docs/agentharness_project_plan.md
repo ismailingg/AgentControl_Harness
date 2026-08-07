@@ -281,15 +281,20 @@ run_finished
 error
 ```
 
+ADR 003 added two more event types, `model_call` and `tool_call` (schema only - see `docs/adr-003-model-and-tool-call-events.md`; nothing emits them yet). `file_change`, `evaluation`, and `suggestion` events remain deferred.
+
 Trace work explicitly deferred:
 
 - `span_id` and `parent_span_id`.
-- Interactive confirmation prompting and actual `confirmation_response` emission.
+- `file_change`, `evaluation`, and `suggestion` event types.
+- Anything that emits `model_call`/`tool_call` (no model or non-terminal tool integration exists in `agentharness run` yet), and `report`/`ci` support for reading them.
 - Full shell parsing.
 - Path canonicalization, symlink resolution, and environment variable expansion.
 - Secret exfiltration detection.
 - Allowed-directory policy.
 - Generalized compound-command classification.
+
+Interactive confirmation prompting is implemented (see §11.1 Run).
 
 ### 7.2 Command Safety Firewall
 
@@ -794,18 +799,16 @@ Build the ADR 002 trace foundation:
 Defer until later trace iterations:
 
 - span IDs and parent-child span relationships
-- model call events
-- tool call events beyond terminal commands
+- anything that emits `model_call`/`tool_call` events (schema exists per ADR 003, no caller yet), and `report`/`ci` support for reading them
 - file change events
 - evaluation and suggestion events
-- cost fields where needed by report/compare (duration is already captured for terminal commands)
 - multi-command workflows
 - working-directory config
 - JSON report output
 - numeric scoring
 - report aggregation across multiple runs
 
-Shipped since this phase was first scoped: real command execution and `terminal_command` emission, `agentharness report` v1, deterministic evaluations in `report`, `agentharness ci` v1 (deterministic-only gate, exit-code based), interactive confirmation prompting.
+Shipped since this phase was first scoped: real command execution and `terminal_command` emission, `agentharness report` v1, deterministic evaluations in `report`, `agentharness ci` v1 (deterministic-only gate, exit-code based), interactive confirmation prompting, `model_call`/`tool_call` trace schema (ADR 003, schema only).
 
 ### Phase 3: Command Policy Engine
 

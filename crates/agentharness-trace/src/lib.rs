@@ -37,7 +37,7 @@ impl From<serde_json::Error> for TraceError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraceEvent {
     pub run_id: String,
     pub seq: u64,
@@ -61,13 +61,15 @@ impl TraceEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum TraceEventKind {
     RunStarted(RunStartedPayload),
     PolicyDecision(PolicyDecisionPayload),
     TerminalCommand(TerminalCommandPayload),
     ConfirmationResponse(ConfirmationResponsePayload),
+    ModelCall(ModelCallPayload),
+    ToolCall(ToolCallPayload),
     RunFinished(RunFinishedPayload),
     Error(ErrorPayload),
 }
@@ -79,6 +81,8 @@ impl TraceEventKind {
             TraceEventKind::PolicyDecision(_) => TraceEventType::PolicyDecision,
             TraceEventKind::TerminalCommand(_) => TraceEventType::TerminalCommand,
             TraceEventKind::ConfirmationResponse(_) => TraceEventType::ConfirmationResponse,
+            TraceEventKind::ModelCall(_) => TraceEventType::ModelCall,
+            TraceEventKind::ToolCall(_) => TraceEventType::ToolCall,
             TraceEventKind::RunFinished(_) => TraceEventType::RunFinished,
             TraceEventKind::Error(_) => TraceEventType::Error,
         }
@@ -91,6 +95,8 @@ pub enum TraceEventType {
     PolicyDecision,
     TerminalCommand,
     ConfirmationResponse,
+    ModelCall,
+    ToolCall,
     RunFinished,
     Error,
 }
@@ -123,6 +129,33 @@ pub struct ConfirmationResponsePayload {
     pub command: String,
     pub approved: bool,
     pub responder: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelCallPayload {
+    pub model: String,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: Option<u64>,
+    pub prompt_excerpt: Option<String>,
+    pub response_excerpt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallPayload {
+    pub tool: String,
+    pub summary: String,
+    pub duration_ms: Option<u64>,
+    pub status: ToolCallStatus,
+    pub detail_excerpt: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStatus {
+    Success,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,6 +341,52 @@ mod tests {
                 approved: true,
                 responder: None,
             }) if command == "rm -rf target"
+        ));
+    }
+
+    #[test]
+    fn serializes_model_call_with_common_envelope() {
+        let event = TraceEvent {
+            run_id: "run_20260805_120000_a1b2".to_owned(),
+            seq: 4,
+            timestamp: "2026-08-05T12:00:00Z".to_owned(),
+            kind: TraceEventKind::ModelCall(ModelCallPayload {
+                model: "claude".to_owned(),
+                tokens_in: Some(1800),
+                tokens_out: Some(400),
+                cost_usd: Some(0.018),
+                duration_ms: Some(2200),
+                prompt_excerpt: Some("fix the failing test".to_owned()),
+                response_excerpt: Some("updated assertion in test_foo".to_owned()),
+            }),
+        };
+
+        let json = serde_json::to_string(&event).expect("event should serialize");
+
+        assert!(json.contains(r#""type":"model_call""#));
+        assert!(json.contains(r#""model":"claude""#));
+        assert!(json.contains(r#""cost_usd":0.018"#));
+
+        let decoded: TraceEvent = serde_json::from_str(&json).expect("event should deserialize");
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn deserializes_tool_call_by_event_type_not_payload_shape() {
+        let json = r#"{"run_id":"run_20260805_120000_a1b2","seq":5,"timestamp":"2026-08-05T12:00:01Z","type":"tool_call","payload":{"tool":"file.write","summary":"wrote src/lib.rs","duration_ms":12,"status":"success","detail_excerpt":null}}"#;
+
+        let event: TraceEvent = serde_json::from_str(json).expect("tool call should deserialize");
+
+        assert_eq!(event.event_type(), TraceEventType::ToolCall);
+        assert!(matches!(
+            event.kind,
+            TraceEventKind::ToolCall(ToolCallPayload {
+                ref tool,
+                ref summary,
+                duration_ms: Some(12),
+                status: ToolCallStatus::Success,
+                detail_excerpt: None,
+            }) if tool == "file.write" && summary == "wrote src/lib.rs"
         ));
     }
 

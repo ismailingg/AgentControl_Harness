@@ -80,19 +80,21 @@ Temporary status mapping for this demo:
 
 For `trace demo`, `success` means "classified as non-blocking", not "executed successfully". This must be revisited when `agentharness run` actually executes commands.
 
-Deferred trace work (status as of the `agentharness ci` v1 and interactive confirmation prompting slices):
+Deferred trace work (status as of the ADR 003 model/tool call event slice):
 
 - span/parent-child nesting
-- new event types: `model_call`, `tool_call` (non-terminal tools), file read/write/diff events, `evaluation` events, `suggestion` events
-- token usage and cost fields on any payload
+- `file_change` event type (see ADR 003 rationale for why it's deferred)
+- `evaluation` and `suggestion` events
 - richer `confirmation_response.responder` metadata
+- anything that actually emits `model_call` or `tool_call` events - the schema exists (ADR 003) but no model integration or non-terminal tool integration exists yet in `agentharness run`
+- `report`/`ci` counting, printing, or evaluating `model_call`/`tool_call` events - they currently fall through a catch-all match and are silently ignored
 - full shell parsing
 - path canonicalization and environment expansion
 - secret exfiltration detection
 - allowed-directory policy
 - generalized compound-command classification
 
-Resolved since this section was first written: real command execution and `terminal_command` emission from `agentharness run`, final run status from actual execution outcome, and interactive confirmation prompting are all implemented.
+Resolved since this section was first written: real command execution and `terminal_command` emission from `agentharness run`, final run status from actual execution outcome, interactive confirmation prompting, and the `model_call`/`tool_call` trace schema (ADR 003) are all implemented.
 
 ## Run v1 Slice
 
@@ -218,3 +220,21 @@ Temporary constraints:
 
 - `confirmation_response.responder` is still always `null`; the prompt does not capture who answered
 - no way to force the prompt even when `--yes` is passed (e.g. a stricter CI mode that always wants an explicit answer)
+
+## Model Call / Tool Call Event Types Slice (ADR 003)
+
+`agentharness-trace` now has two new event types, `model_call` and `tool_call`, alongside the six from ADR 002. See `docs/adr-003-model-and-tool-call-events.md` for the full design rationale.
+
+`model_call` is fully typed for cost/token tracking:
+
+```text
+model, tokens_in, tokens_out, cost_usd, duration_ms, prompt_excerpt, response_excerpt
+```
+
+`tool_call` is a smaller generic shape for everything else (file ops, API calls, custom tools):
+
+```text
+tool, summary, duration_ms, status (success | error), detail_excerpt
+```
+
+This slice is schema-only. Nothing in `agentharness run` emits either event type yet, and `report`/`ci` do not count, print, or evaluate them - they currently fall through a catch-all match in `build_report` and are silently ignored. The next consumer of this schema will be whatever eventually integrates a real model call or non-terminal tool into `agentharness run`.
