@@ -593,7 +593,8 @@ id: codegen_fix_tests
 input: "Fix the failing tests in this Rust crate."
 
 workflow:
-  command: "python examples/run_agent.py"
+  steps:
+    - "python examples/run_agent.py"
 
 limits:
   max_steps: 30
@@ -630,35 +631,32 @@ agentharness run <config-file> [--runs-dir runs] [--yes]
 
 Runs the configured workflow and records traces.
 
-Run v1 uses the minimal config shape:
+Run v1 uses a minimal config shape - a list of shell commands run in order:
 
 ```yaml
 id: risky_command_demo
 
 workflow:
-  command: "cargo test"
+  steps:
+    - "cargo build"
+    - "cargo test"
 ```
 
 Run v1 behavior:
 
 - creates a trace run
 - writes `run_started`
-- classifies `workflow.command`
-- writes `policy_decision`
-- blocks `BLOCK` decisions without execution
-- for `REQUIRE_CONFIRMATION` decisions, prompts interactively on stdin unless `--yes` is passed (which auto-approves)
-- writes `confirmation_response` with the real approve/decline outcome
-- executes `ALLOW`, `WARN`, and approved `REQUIRE_CONFIRMATION` commands
-- writes `terminal_command` with exit code, duration, and stdout/stderr excerpts
-- writes `run_finished`
+- for each step in `workflow.steps`, in order: classifies the command, writes `policy_decision`, blocks `BLOCK` decisions without execution, prompts interactively on stdin for `REQUIRE_CONFIRMATION` decisions unless `--yes` is passed, writes `confirmation_response`, executes `ALLOW`/`WARN`/approved `REQUIRE_CONFIRMATION` commands, and writes `terminal_command`
+- stops at the first step whose outcome is not success (blocked, declined, or failed); remaining steps are not attempted
+- writes `run_finished` with the overall run status (the status of the step that stopped it, or success if every step succeeded)
 - updates `metadata.json`
 
 Temporary v1 constraints:
 
-- one command per config
 - command strings execute through the platform shell (`cmd /C` on Windows, `sh -c` elsewhere)
 - `--yes` bypasses the prompt entirely; no way yet to force the prompt even with `--yes` set
 - no responder metadata captured for confirmation answers
+- no `continue-on-error`; a failing/blocked step always halts the run
 - no model/tool/file/evaluation/suggestion events yet
 - no working-directory config yet
 
@@ -802,13 +800,12 @@ Defer until later trace iterations:
 - anything that emits `model_call`/`tool_call` events (schema exists per ADR 003, no caller yet), and `report`/`ci` support for reading them
 - file change events
 - evaluation and suggestion events
-- multi-command workflows
 - working-directory config
 - JSON report output
 - numeric scoring
 - report aggregation across multiple runs
 
-Shipped since this phase was first scoped: real command execution and `terminal_command` emission, `agentharness report` v1, deterministic evaluations in `report`, `agentharness ci` v1 (deterministic-only gate, exit-code based), interactive confirmation prompting, `model_call`/`tool_call` trace schema (ADR 003, schema only).
+Shipped since this phase was first scoped: real command execution and `terminal_command` emission, `agentharness report` v1, deterministic evaluations in `report`, `agentharness ci` v1 (deterministic-only gate, exit-code based), interactive confirmation prompting, `model_call`/`tool_call` trace schema (ADR 003, schema only), multi-command run workflows (stop-on-first-non-success, no trace schema change needed).
 
 ### Phase 3: Command Policy Engine
 

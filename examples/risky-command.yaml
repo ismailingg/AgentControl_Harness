@@ -1,4 +1,5 @@
 id: risky_command_demo
 
 workflow:
-  command: "rm -rf /"
+  steps:
+    - "rm -rf /"

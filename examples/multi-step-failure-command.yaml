@@ -1,0 +1,7 @@
+id: multi_step_stops_after_failure_demo
+
+workflow:
+  steps:
+    - "echo before-failure"
+    - "exit 1"
+    - "echo after-failure-should-not-run"

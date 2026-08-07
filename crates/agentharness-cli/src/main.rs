@@ -67,7 +67,7 @@ struct RunConfig {
 
 #[derive(Debug, Deserialize)]
 struct WorkflowConfig {
-    command: String,
+    steps: Vec<String>,
 }
 
 fn is_help(args: &[String]) -> bool {
@@ -110,8 +110,17 @@ fn run_workflow(parts: &[String]) -> ExitCode {
             println!("Run complete.");
             println!("Run: {}", summary.run_dir.display());
             println!("Status: {}", summary.status);
-            println!("Command: {}", summary.command);
-            println!("Decision: {}", summary.decision);
+            println!();
+            println!("Steps:");
+            for (index, step) in summary.steps.iter().enumerate() {
+                println!(
+                    "  {}. {} -> {} ({})",
+                    index + 1,
+                    step.command,
+                    step.status,
+                    step.decision
+                );
+            }
 
             match summary.status {
                 "success" => ExitCode::SUCCESS,
@@ -213,8 +222,14 @@ struct TraceDemoSummary {
 struct RunSummary {
     run_dir: PathBuf,
     status: &'static str,
+    steps: Vec<StepSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StepSummary {
     command: String,
     decision: String,
+    status: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -513,50 +528,71 @@ fn evaluation_status_label(passed: bool) -> &'static str {
 
 fn execute_run(options: &RunOptions) -> Result<RunSummary, Box<dyn std::error::Error>> {
     let config = read_run_config(&options.config_path)?;
-    let command = config.workflow.command;
+
+    if config.workflow.steps.is_empty() {
+        return Err("workflow.steps must contain at least one command".into());
+    }
+
     let mut writer = TraceWriter::create(&options.runs_dir, env!("CARGO_PKG_VERSION"))?;
 
     writer.append(TraceEventKind::RunStarted(RunStartedPayload {
         agentharness_version: env!("CARGO_PKG_VERSION").to_owned(),
     }))?;
 
-    let decision = classify_command(&command);
-    writer.append(TraceEventKind::PolicyDecision(policy_decision_payload(
-        &command, &decision,
-    )))?;
+    let mut step_summaries = Vec::with_capacity(config.workflow.steps.len());
+    let mut run_status = RunStatus::Success;
 
-    let status = match decision.action {
-        PolicyAction::Block => RunStatus::Blocked,
-        PolicyAction::RequireConfirmation => {
-            let approved = options.yes || prompt_for_confirmation(&command, &decision);
+    for command in config.workflow.steps {
+        let decision = classify_command(&command);
+        writer.append(TraceEventKind::PolicyDecision(policy_decision_payload(
+            &command, &decision,
+        )))?;
 
-            writer.append(TraceEventKind::ConfirmationResponse(
-                ConfirmationResponsePayload {
-                    command: command.clone(),
-                    approved,
-                    responder: None,
-                },
-            ))?;
+        let step_status = match decision.action {
+            PolicyAction::Block => RunStatus::Blocked,
+            PolicyAction::RequireConfirmation => {
+                let approved = options.yes || prompt_for_confirmation(&command, &decision);
 
-            if approved {
-                execute_and_trace_command(&mut writer, &command)?
-            } else {
-                RunStatus::Blocked
+                writer.append(TraceEventKind::ConfirmationResponse(
+                    ConfirmationResponsePayload {
+                        command: command.clone(),
+                        approved,
+                        responder: None,
+                    },
+                ))?;
+
+                if approved {
+                    execute_and_trace_command(&mut writer, &command)?
+                } else {
+                    RunStatus::Blocked
+                }
             }
-        }
-        PolicyAction::Allow | PolicyAction::Warn => {
-            execute_and_trace_command(&mut writer, &command)?
-        }
-    };
+            PolicyAction::Allow | PolicyAction::Warn => {
+                execute_and_trace_command(&mut writer, &command)?
+            }
+        };
 
-    writer.append(TraceEventKind::RunFinished(RunFinishedPayload { status }))?;
-    writer.finish(status)?;
+        step_summaries.push(StepSummary {
+            command,
+            decision: decision.action.to_string().to_lowercase(),
+            status: run_status_label(step_status),
+        });
+
+        if step_status != RunStatus::Success {
+            run_status = step_status;
+            break;
+        }
+    }
+
+    writer.append(TraceEventKind::RunFinished(RunFinishedPayload {
+        status: run_status,
+    }))?;
+    writer.finish(run_status)?;
 
     Ok(RunSummary {
         run_dir: writer.run_dir().to_path_buf(),
-        status: run_status_label(status),
-        command,
-        decision: decision.action.to_string().to_lowercase(),
+        status: run_status_label(run_status),
+        steps: step_summaries,
     })
 }
 
@@ -715,6 +751,7 @@ fn print_help() {
     println!();
     println!("Examples:");
     println!("  agentharness run examples/risky-command.yaml");
+    println!("  agentharness run examples/multi-step-command.yaml");
     println!("  agentharness report runs");
     println!("  agentharness ci runs");
     println!("  agentharness policy check \"cargo test\"");
@@ -904,5 +941,102 @@ mod tests {
                 .len(),
             OUTPUT_EXCERPT_LIMIT
         );
+    }
+
+    #[test]
+    fn execute_run_runs_every_step_when_all_succeed() {
+        let (runs_dir, config_path) = test_run_scenario(
+            "multi_step_success",
+            "id: t\nworkflow:\n  steps:\n    - \"echo one\"\n    - \"echo two\"\n",
+        );
+
+        let summary = execute_run(&RunOptions {
+            config_path,
+            runs_dir: runs_dir.clone(),
+            yes: false,
+        })
+        .expect("run should complete");
+
+        assert_eq!(summary.status, "success");
+        assert_eq!(summary.steps.len(), 2);
+        assert!(summary.steps.iter().all(|step| step.status == "success"));
+
+        fs::remove_dir_all(runs_dir.parent().unwrap_or(&runs_dir)).ok();
+    }
+
+    #[test]
+    fn execute_run_stops_after_first_failed_step() {
+        let (runs_dir, config_path) = test_run_scenario(
+            "multi_step_stop_on_failure",
+            "id: t\nworkflow:\n  steps:\n    - \"echo one\"\n    - \"exit 1\"\n    - \"echo three\"\n",
+        );
+
+        let summary = execute_run(&RunOptions {
+            config_path,
+            runs_dir: runs_dir.clone(),
+            yes: false,
+        })
+        .expect("run should complete");
+
+        assert_eq!(summary.status, "failed");
+        assert_eq!(summary.steps.len(), 2);
+        assert_eq!(summary.steps[0].status, "success");
+        assert_eq!(summary.steps[1].status, "failed");
+
+        fs::remove_dir_all(runs_dir.parent().unwrap_or(&runs_dir)).ok();
+    }
+
+    #[test]
+    fn execute_run_stops_after_first_blocked_step() {
+        let (runs_dir, config_path) = test_run_scenario(
+            "multi_step_stop_on_block",
+            "id: t\nworkflow:\n  steps:\n    - \"echo one\"\n    - \"rm -rf /\"\n    - \"echo three\"\n",
+        );
+
+        let summary = execute_run(&RunOptions {
+            config_path,
+            runs_dir: runs_dir.clone(),
+            yes: false,
+        })
+        .expect("run should complete");
+
+        assert_eq!(summary.status, "blocked");
+        assert_eq!(summary.steps.len(), 2);
+        assert_eq!(summary.steps[1].decision, "block");
+
+        fs::remove_dir_all(runs_dir.parent().unwrap_or(&runs_dir)).ok();
+    }
+
+    #[test]
+    fn execute_run_rejects_empty_steps() {
+        let (runs_dir, config_path) =
+            test_run_scenario("multi_step_empty", "id: t\nworkflow:\n  steps: []\n");
+
+        let error = execute_run(&RunOptions {
+            config_path,
+            runs_dir: runs_dir.clone(),
+            yes: false,
+        })
+        .expect_err("empty steps should be rejected");
+
+        assert!(error.to_string().contains("workflow.steps"));
+
+        fs::remove_dir_all(runs_dir.parent().unwrap_or(&runs_dir)).ok();
+    }
+
+    fn test_run_scenario(name: &str, config_yaml: &str) -> (PathBuf, PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let scenario_dir = std::env::temp_dir().join(format!("agentharness_cli_{name}_{nanos}"));
+        fs::create_dir_all(&scenario_dir).expect("scenario dir should be created");
+
+        let config_path = scenario_dir.join("config.yaml");
+        fs::write(&config_path, config_yaml).expect("config should be written");
+
+        let runs_dir = scenario_dir.join("runs");
+
+        (runs_dir, config_path)
     }
 }

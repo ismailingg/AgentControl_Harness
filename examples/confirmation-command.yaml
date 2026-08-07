@@ -1,4 +1,5 @@
 id: confirmation_command_demo
 
 workflow:
-  command: "rm -rf target"
+  steps:
+    - "rm -rf target"

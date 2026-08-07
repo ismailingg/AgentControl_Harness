@@ -110,26 +110,23 @@ The v1 config shape is intentionally minimal:
 id: risky_command_demo
 
 workflow:
-  command: "cargo test"
+  steps:
+    - "cargo build"
+    - "cargo test"
 ```
+
+`workflow.steps` originally shipped as a single `workflow.command: String` field; it was replaced (not kept alongside as a compatibility shim) by the multi-step slice below.
 
 Run v1 behavior:
 
 - creates a trace run
 - writes `run_started`
-- classifies `workflow.command`
-- writes `policy_decision`
-- blocks `block` decisions without execution
-- for `require_confirmation` decisions, prompts interactively on stdin (`Proceed? [y/N]`) unless `--yes` is passed, in which case it auto-approves
-- writes `confirmation_response` with the real approve/decline outcome
-- executes `allow`, `warn`, and approved `require_confirmation` commands
-- writes `terminal_command` with exit code, duration, and stdout/stderr excerpts
+- for each step in `workflow.steps`, in order: classifies the command, writes `policy_decision`, and either blocks it, prompts for confirmation, or executes it (see multi-step behavior below)
 - writes `run_finished`
 - updates `metadata.json`
 
 Temporary v1 constraints:
 
-- only one command per config
 - command strings execute through the platform shell (`cmd /C` on Windows, `sh -c` elsewhere)
 - `--yes` bypasses the prompt entirely; there is no way yet to require the prompt even when `--yes` is set (e.g. for a hardened CI mode)
 - `confirmation_response.responder` is always `null`; no richer responder metadata (username, source) yet
@@ -238,3 +235,35 @@ tool, summary, duration_ms, status (success | error), detail_excerpt
 ```
 
 This slice is schema-only. Nothing in `agentharness run` emits either event type yet, and `report`/`ci` do not count, print, or evaluate them - they currently fall through a catch-all match in `build_report` and are silently ignored. The next consumer of this schema will be whatever eventually integrates a real model call or non-terminal tool into `agentharness run`.
+
+## Multi-Step Run Slice
+
+`agentharness run` now executes a list of commands per workflow instead of exactly one:
+
+```yaml
+workflow:
+  steps:
+    - "cargo build"
+    - "cargo test"
+    - "cargo clippy"
+```
+
+`RunConfig.workflow.command: String` was replaced outright by `workflow.steps: Vec<String>` - no dual-shape compatibility layer, since there are no external consumers of the old shape yet (only the in-repo examples, which were updated alongside this change).
+
+No trace schema change was needed for this. `policy_decision`, `confirmation_response`, and `terminal_command` were never "one per run" in the schema - `run` just only ever produced one of each because it only ran one command. Running multiple steps just means the writer's existing `seq` counter appends more of the same event types in order. `report` and `ci` required zero code changes: they already iterate every event in `events.jsonl` generically and count/print however many of each type show up.
+
+Execution semantics: steps run in order. The first step whose outcome is not `success` (blocked by policy, declined at confirmation, or failed at execution) stops the run - remaining steps are not attempted. The run's overall status is that step's status. An empty `workflow.steps` list is a configuration error (`execute_run` returns an `Err` before creating a trace run).
+
+`RunSummary` changed from single `command`/`decision` fields to a `steps: Vec<StepSummary>` list, where each `StepSummary` holds that step's `command`, `decision` (the policy action), and `status` (the step's own outcome). The CLI now prints one line per step:
+
+```text
+Steps:
+  1. cargo build -> success (allow)
+  2. cargo test -> failed (allow)
+```
+
+Temporary constraints:
+
+- no per-step working-directory override
+- no `continue-on-error` option; a failing/blocked step always halts the run
+- no way to see which step number a `policy_decision`/`terminal_command` event in the trace belongs to other than reading them in `seq` order (no explicit `step_index` field on the payloads)
