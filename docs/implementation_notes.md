@@ -61,12 +61,209 @@ The next implementation slice is the `agentharness-trace` crate:
 - metadata writing
 - latest-run pointer updates
 
-Deferred trace work:
+## Trace Demo Slice
+
+The CLI includes a small proof-of-plumbing command:
+
+```text
+agentharness trace demo [--runs-dir <path>] [--command "<cmd>"]
+```
+
+This command creates a run directory, writes `run_started`, calls the real policy classifier, writes `policy_decision`, and finishes metadata.
+
+It intentionally does not execute commands and does not emit `terminal_command`.
+
+Temporary status mapping for this demo:
+
+- `allow` and `warn` -> `success`
+- `require_confirmation` and `block` -> `blocked`
+
+For `trace demo`, `success` means "classified as non-blocking", not "executed successfully". This must be revisited when `agentharness run` actually executes commands.
+
+Deferred trace work (status as of the ADR 003 model/tool call event slice):
 
 - span/parent-child nesting
-- interactive confirmation prompting
+- `file_change` event type (see ADR 003 rationale for why it's deferred)
+- `evaluation` and `suggestion` events
+- richer `confirmation_response.responder` metadata
+- anything that actually emits `model_call` or `tool_call` events - the schema exists (ADR 003) but no model integration or non-terminal tool integration exists yet in `agentharness run`
+- `report`/`ci` counting, printing, or evaluating `model_call`/`tool_call` events - they currently fall through a catch-all match and are silently ignored
 - full shell parsing
 - path canonicalization and environment expansion
 - secret exfiltration detection
 - allowed-directory policy
 - generalized compound-command classification
+
+Resolved since this section was first written: real command execution and `terminal_command` emission from `agentharness run`, final run status from actual execution outcome, interactive confirmation prompting, and the `model_call`/`tool_call` trace schema (ADR 003) are all implemented.
+
+## Run v1 Slice
+
+The first real run command is:
+
+```text
+agentharness run <config-file> [--runs-dir <path>] [--yes]
+```
+
+The v1 config shape is intentionally minimal:
+
+```yaml
+id: risky_command_demo
+
+workflow:
+  steps:
+    - "cargo build"
+    - "cargo test"
+```
+
+`workflow.steps` originally shipped as a single `workflow.command: String` field; it was replaced (not kept alongside as a compatibility shim) by the multi-step slice below.
+
+Run v1 behavior:
+
+- creates a trace run
+- writes `run_started`
+- for each step in `workflow.steps`, in order: classifies the command, writes `policy_decision`, and either blocks it, prompts for confirmation, or executes it (see multi-step behavior below)
+- writes `run_finished`
+- updates `metadata.json`
+
+Temporary v1 constraints:
+
+- command strings execute through the platform shell (`cmd /C` on Windows, `sh -c` elsewhere)
+- `--yes` bypasses the prompt entirely; there is no way yet to require the prompt even when `--yes` is set (e.g. for a hardened CI mode)
+- `confirmation_response.responder` is always `null`; no richer responder metadata (username, source) yet
+- no model/tool/file/evaluation/suggestion events yet
+- no working-directory config yet
+
+## Report v1 Slice
+
+The first trace reader command is:
+
+```text
+agentharness report <runs-dir-or-run-dir>
+```
+
+If the path contains `latest.txt`, report v1 resolves it to the latest run directory. Otherwise, it treats the path as a direct run directory.
+
+Report v1 reads:
+
+- `metadata.json`
+- `events.jsonl`
+
+It prints:
+
+- run ID, path, status, start/end timestamps
+- event count
+- policy decision count
+- terminal command count
+- confirmation response count
+- blocked command count
+- warning count
+- failed terminal command count
+- compact policy/confirmation/terminal command details
+
+Report v1 also prints deterministic evaluations:
+
+- `no_blocked_commands`
+- `no_failed_terminal_commands`
+- `run_status_success`
+
+Temporary v1 constraints:
+
+- terminal text output only
+- no JSON report output yet
+- no numeric scoring
+- no comparison
+- no aggregation across multiple runs
+
+## CI v1 Slice
+
+The first CI gate command is:
+
+```text
+agentharness ci <runs-dir-or-run-dir>
+```
+
+It takes the same argument shape as `report` (a `runs/` dir with `latest.txt`, or a direct run dir) and reuses the exact same report-building and evaluation logic. It does not add any new evaluations or trace data — it is purely a pass/fail gate on top of the three deterministic evaluations `report` already computes (`no_blocked_commands`, `no_failed_terminal_commands`, `run_status_success`).
+
+Output is condensed compared to `report`: run ID, status, and the PASS/FAIL evaluation lines only (no policy/terminal-command/confirmation detail dump).
+
+Exit codes:
+
+- `0` - every evaluation passed
+- `1` - an evaluation failed, or the run/report could not be read at all (missing directory, corrupt JSON, etc.)
+- `64` - usage error (missing argument)
+
+Temporary v1 constraints:
+
+- no configurable fail-if thresholds (see project plan §7.11 `CI Gates` for the eventual richer design); v1 only gates on the fixed set of deterministic evaluations `report` already produces
+- no JSON output
+
+## Interactive Confirmation Prompting Slice
+
+`agentharness run` now prompts on stdin for `require_confirmation` decisions instead of always auto-declining:
+
+```text
+This command requires confirmation:
+  Command: git clean -fd
+  Risk: HIGH
+  Reason: git clean can remove untracked files permanently
+Proceed? [y/N]:
+```
+
+`--yes` still bypasses the prompt entirely and auto-approves, for scripted/non-interactive use. The `confirmation_response` event already existed in the schema (ADR 002) and is unchanged in shape - this slice only changes how the `approved` field gets decided.
+
+If stdin can't be read (EOF, closed pipe), the command is treated as declined rather than erroring.
+
+Temporary constraints:
+
+- `confirmation_response.responder` is still always `null`; the prompt does not capture who answered
+- no way to force the prompt even when `--yes` is passed (e.g. a stricter CI mode that always wants an explicit answer)
+
+## Model Call / Tool Call Event Types Slice (ADR 003)
+
+`agentharness-trace` now has two new event types, `model_call` and `tool_call`, alongside the six from ADR 002. See `docs/adr-003-model-and-tool-call-events.md` for the full design rationale.
+
+`model_call` is fully typed for cost/token tracking:
+
+```text
+model, tokens_in, tokens_out, cost_usd, duration_ms, prompt_excerpt, response_excerpt
+```
+
+`tool_call` is a smaller generic shape for everything else (file ops, API calls, custom tools):
+
+```text
+tool, summary, duration_ms, status (success | error), detail_excerpt
+```
+
+This slice is schema-only. Nothing in `agentharness run` emits either event type yet, and `report`/`ci` do not count, print, or evaluate them - they currently fall through a catch-all match in `build_report` and are silently ignored. The next consumer of this schema will be whatever eventually integrates a real model call or non-terminal tool into `agentharness run`.
+
+## Multi-Step Run Slice
+
+`agentharness run` now executes a list of commands per workflow instead of exactly one:
+
+```yaml
+workflow:
+  steps:
+    - "cargo build"
+    - "cargo test"
+    - "cargo clippy"
+```
+
+`RunConfig.workflow.command: String` was replaced outright by `workflow.steps: Vec<String>` - no dual-shape compatibility layer, since there are no external consumers of the old shape yet (only the in-repo examples, which were updated alongside this change).
+
+No trace schema change was needed for this. `policy_decision`, `confirmation_response`, and `terminal_command` were never "one per run" in the schema - `run` just only ever produced one of each because it only ran one command. Running multiple steps just means the writer's existing `seq` counter appends more of the same event types in order. `report` and `ci` required zero code changes: they already iterate every event in `events.jsonl` generically and count/print however many of each type show up.
+
+Execution semantics: steps run in order. The first step whose outcome is not `success` (blocked by policy, declined at confirmation, or failed at execution) stops the run - remaining steps are not attempted. The run's overall status is that step's status. An empty `workflow.steps` list is a configuration error (`execute_run` returns an `Err` before creating a trace run).
+
+`RunSummary` changed from single `command`/`decision` fields to a `steps: Vec<StepSummary>` list, where each `StepSummary` holds that step's `command`, `decision` (the policy action), and `status` (the step's own outcome). The CLI now prints one line per step:
+
+```text
+Steps:
+  1. cargo build -> success (allow)
+  2. cargo test -> failed (allow)
+```
+
+Temporary constraints:
+
+- no per-step working-directory override
+- no `continue-on-error` option; a failing/blocked step always halts the run
+- no way to see which step number a `policy_decision`/`terminal_command` event in the trace belongs to other than reading them in `seq` order (no explicit `step_index` field on the payloads)

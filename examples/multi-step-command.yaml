@@ -1,0 +1,7 @@
+id: multi_step_demo
+
+workflow:
+  steps:
+    - "echo step-one"
+    - "echo step-two"
+    - "echo step-three"

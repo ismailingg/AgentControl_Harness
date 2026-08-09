@@ -254,7 +254,7 @@ Trace Layer v1 is governed by ADR 002. The v1 event protocol is flat JSONL with 
     "risk": "critical",
     "rule": "destructive-root-delete",
     "reason": "command attempts a destructive delete against a root/system path"
-  },
+  }
 }
 ```
 
@@ -281,15 +281,20 @@ run_finished
 error
 ```
 
+ADR 003 added two more event types, `model_call` and `tool_call` (schema only - see `docs/adr-003-model-and-tool-call-events.md`; nothing emits them yet). `file_change`, `evaluation`, and `suggestion` events remain deferred.
+
 Trace work explicitly deferred:
 
 - `span_id` and `parent_span_id`.
-- Interactive confirmation prompting and actual `confirmation_response` emission.
+- `file_change`, `evaluation`, and `suggestion` event types.
+- Anything that emits `model_call`/`tool_call` (no model or non-terminal tool integration exists in `agentharness run` yet), and `report`/`ci` support for reading them.
 - Full shell parsing.
 - Path canonicalization, symlink resolution, and environment variable expansion.
 - Secret exfiltration detection.
 - Allowed-directory policy.
 - Generalized compound-command classification.
+
+Interactive confirmation prompting is implemented (see §11.1 Run).
 
 ### 7.2 Command Safety Firewall
 
@@ -588,7 +593,8 @@ id: codegen_fix_tests
 input: "Fix the failing tests in this Rust crate."
 
 workflow:
-  command: "python examples/run_agent.py"
+  steps:
+    - "python examples/run_agent.py"
 
 limits:
   max_steps: 30
@@ -620,18 +626,77 @@ success_criteria:
 ### 11.1 Run
 
 ```bash
-agentharness run examples/codegen.yaml
+agentharness run <config-file> [--runs-dir runs] [--yes]
 ```
 
 Runs the configured workflow and records traces.
 
+Run v1 uses a minimal config shape - a list of shell commands run in order:
+
+```yaml
+id: risky_command_demo
+
+workflow:
+  steps:
+    - "cargo build"
+    - "cargo test"
+```
+
+Run v1 behavior:
+
+- creates a trace run
+- writes `run_started`
+- for each step in `workflow.steps`, in order: classifies the command, writes `policy_decision`, blocks `BLOCK` decisions without execution, prompts interactively on stdin for `REQUIRE_CONFIRMATION` decisions unless `--yes` is passed, writes `confirmation_response`, executes `ALLOW`/`WARN`/approved `REQUIRE_CONFIRMATION` commands, and writes `terminal_command`
+- stops at the first step whose outcome is not success (blocked, declined, or failed); remaining steps are not attempted
+- writes `run_finished` with the overall run status (the status of the step that stopped it, or success if every step succeeded)
+- updates `metadata.json`
+
+Temporary v1 constraints:
+
+- command strings execute through the platform shell (`cmd /C` on Windows, `sh -c` elsewhere)
+- `--yes` bypasses the prompt entirely; no way yet to force the prompt even with `--yes` set
+- no responder metadata captured for confirmation answers
+- no `continue-on-error`; a failing/blocked step always halts the run
+- no model/tool/file/evaluation/suggestion events yet
+- no working-directory config yet
+
 ### 11.2 Report
 
 ```bash
-agentharness report runs/latest
+agentharness report <runs-dir-or-run-dir>
 ```
 
 Shows run score, failures, warnings, costs, and suggestions.
+
+Report v1 is the first trace reader. If the path contains `latest.txt`, it resolves that file to the latest run directory. Otherwise, it treats the path as a direct run directory.
+
+Report v1 reads `metadata.json` and `events.jsonl`, then prints:
+
+- run ID, path, status, start/end timestamps
+- event count
+- policy decision count
+- terminal command count
+- confirmation response count
+- blocked command count
+- warning count
+- failed terminal command count
+- compact policy/confirmation/terminal command details
+
+Report v1 also prints deterministic evaluations:
+
+- `no_blocked_commands`
+- `no_failed_terminal_commands`
+- `run_status_success`
+
+Temporary v1 constraints:
+
+- terminal text output only
+- no JSON report output yet
+- no numeric scoring
+- no comparison
+- no aggregation across multiple runs
+
+CI gate behavior now exists as a separate command; see §11.6.
 
 ### 11.3 Compare
 
@@ -649,13 +714,49 @@ agentharness policy check "rm -rf /"
 
 Classifies a command without running it.
 
-### 11.5 CI
+### 11.5 Trace Demo
+
+```bash
+agentharness trace demo [--runs-dir runs] [--command "rm -rf /"]
+```
+
+Creates a demo trace without executing the command. This command is a temporary proof of wiring between `agentharness-cli`, `agentharness-policy`, and `agentharness-trace`.
+
+It writes:
+
+```text
+run_started
+policy_decision
+```
+
+It does not emit `terminal_command`, because it does not execute commands.
+
+Temporary demo-only status mapping:
+
+```text
+ALLOW -> success
+WARN -> success
+REQUIRE_CONFIRMATION -> blocked
+BLOCK -> blocked
+```
+
+For this demo, `success` means "classified as non-blocking", not "executed successfully". The real `agentharness run` command must revisit run status once commands actually execute.
+
+### 11.6 CI
 
 ```bash
 agentharness ci --config agentharness.yaml
 ```
 
-Runs configured checks and exits non-zero on failure.
+Runs configured checks and exits non-zero on failure. This is the long-term vision: a config-driven gate with the fail-if thresholds described in §7.11 (success rate drop, cost increase, loop failure rate, etc.).
+
+CI v1 (shipped) is a smaller, deterministic-only slice of this:
+
+```bash
+agentharness ci <runs-dir-or-run-dir>
+```
+
+It takes the same path argument as `report`, reuses `report`'s evaluation logic (`no_blocked_commands`, `no_failed_terminal_commands`, `run_status_success`) with no config file and no configurable thresholds, and exits `0` if all evaluations pass or `1` otherwise. The richer config-driven version above remains future work.
 
 ## 12. Implementation Roadmap
 
@@ -689,15 +790,22 @@ Build the ADR 002 trace foundation:
 - run directory creation
 - `metadata.json`
 - `latest.txt`
+- CLI proof command: `agentharness trace demo [--runs-dir <path>] [--command "<cmd>"]`
+- first real capture command: `agentharness run <config-file> [--runs-dir <path>] [--yes]`
+- first trace reader command: `agentharness report <runs-dir-or-run-dir>`
 
 Defer until later trace iterations:
 
 - span IDs and parent-child span relationships
-- model call events
-- tool call events beyond terminal commands
+- anything that emits `model_call`/`tool_call` events (schema exists per ADR 003, no caller yet), and `report`/`ci` support for reading them
 - file change events
 - evaluation and suggestion events
-- duration and cost fields where needed by report/compare
+- working-directory config
+- JSON report output
+- numeric scoring
+- report aggregation across multiple runs
+
+Shipped since this phase was first scoped: real command execution and `terminal_command` emission, `agentharness report` v1, deterministic evaluations in `report`, `agentharness ci` v1 (deterministic-only gate, exit-code based), interactive confirmation prompting, `model_call`/`tool_call` trace schema (ADR 003, schema only), multi-command run workflows (stop-on-first-non-success, no trace schema change needed).
 
 ### Phase 3: Command Policy Engine
 

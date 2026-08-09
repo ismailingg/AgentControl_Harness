@@ -19,16 +19,83 @@ Rule: destructive-root-delete
 Reason: command attempts a destructive delete against a root/system path
 ```
 
+## First Run Command
+
+```bash
+cargo run -p agentharness-cli -- run examples/risky-command.yaml
+```
+
+This creates a local trace run, classifies the configured command, blocks unsafe commands before execution, and records events in:
+
+```text
+runs/
+  latest.txt
+  run_.../
+    metadata.json
+    events.jsonl
+```
+
+For safe manual testing:
+
+```bash
+cargo run -p agentharness-cli -- run examples/allow-command.yaml
+```
+
+To summarize the latest run in a runs directory:
+
+```bash
+cargo run -p agentharness-cli -- report runs
+```
+
+You can also report a specific run directory:
+
+```bash
+cargo run -p agentharness-cli -- report runs/run_...
+```
+
+To gate on the same evaluations `report` prints (useful for CI), exits non-zero on failure:
+
+```bash
+cargo run -p agentharness-cli -- ci runs
+```
+
+A workflow is a list of commands run in order:
+
+```yaml
+workflow:
+  steps:
+    - "cargo build"
+    - "cargo test"
+```
+
+The run stops at the first step that gets blocked, is declined, or fails - later steps are not attempted. See it in action:
+
+```bash
+cargo run -p agentharness-cli -- run examples/multi-step-command.yaml
+cargo run -p agentharness-cli -- run examples/multi-step-failure-command.yaml
+```
+
+`REQUIRE_CONFIRMATION` commands prompt for a y/n answer on stdin. Pass `--yes` to auto-approve without prompting (for scripted/non-interactive use).
+
 ## Workspace
 
 ```text
 crates/
   agentharness-cli/
   agentharness-policy/
+  agentharness-trace/
 examples/
+  allow-command.yaml
+  confirmation-command.yaml
+  multi-step-command.yaml
+  multi-step-failure-command.yaml
   policy_cases.txt
+  risky-command.yaml
 docs/
   implementation_notes.md
+  adr-001-initial-shape.md
+  adr-002-trace-layer-v1.md
+  adr-003-model-and-tool-call-events.md
 ```
 
 ## Current Scope
@@ -36,6 +103,10 @@ docs/
 - Rust workspace
 - CLI-first interface
 - deterministic command safety classifier
-- examples for risky and allowed commands
-- unit tests for policy classification
-
+- local JSONL trace writer
+- multi-step `agentharness run` v1, with interactive confirmation prompting and stop-on-first-failure
+- `agentharness report` with deterministic evaluations
+- `agentharness ci` v1 (exit-code gate on those same evaluations)
+- `model_call`/`tool_call` trace event schema (reserved, not yet emitted - see ADR 003)
+- examples for risky, allowed, confirmation-required, and multi-step commands
+- unit tests for policy classification, trace writing, and CLI behavior
